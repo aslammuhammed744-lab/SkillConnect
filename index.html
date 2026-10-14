@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkillConnect India - Skill Exchange & Local Service Provider Platform</title>
+  <meta name="description" content="SkillConnect India connects local skilled professionals with users through zero-fee skill barter exchanges and direct service bookings.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet Interactive Map CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- CSS Styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="brand-logo" onclick="switchAuthMode('login')">
+      <div class="logo-icon">🤝</div>
+      <div>
+        <div class="logo-text">SkillConnect</div>
+        <div class="logo-tagline">Skill Exchange & Services (India)</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main View Container -->
+  <main class="main-wrapper" id="tabMainContainer">
+    <!-- Dynamic Content Rendered by app.js -->
+  </main>
+
+  <!-- Universal Modal Backdrop -->
+  <div class="modal-overlay" id="bookingModal">
+    <div class="modal-content" id="bookingModalBody">
+      <!-- Modal Content Rendered by app.js -->
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer style="border-top: 1px solid var(--border-color); padding: 1.5rem 2rem; background: #FFFFFF; margin-top: 3rem; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+    <div style="max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+      <div>
+        <strong style="color: #09090B;">SkillConnect India</strong> — Skill Exchange & Local Service Provider Platform.
+      </div>
+      <div style="display: flex; gap: 1.5rem;">
+        <span style="cursor: pointer;" onclick="switchTab('discover')">Discover Pros</span>
+        <span style="cursor: pointer;" onclick="switchTab('barter')">Skill Barter Marketplace</span>
+        <span style="cursor: pointer;" onclick="switchTab('admin')">Admin Controls</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Leaflet Interactive Map JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Supabase Cloud Database Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabaseClient.js"></script>
+
+  <!-- App Scripts -->
+  <script src="data.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

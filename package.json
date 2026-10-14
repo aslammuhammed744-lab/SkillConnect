@@ -1,0 +1,19 @@
+{
+  "name": "skillconnect-india",
+  "version": "1.0.0",
+  "description": "SkillConnect India - Skill Exchange & Local Service Provider Platform",
+  "main": "index.html",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "dev": "python3 -m http.server 8080",
+    "serve": "npx -y serve ."
+  },
+  "keywords": [
+    "skill-exchange",
+    "service-provider",
+    "skillconnect",
+    "india"
+  ],
+  "author": "Afsal Haneef",
+  "license": "ISC"
+}
