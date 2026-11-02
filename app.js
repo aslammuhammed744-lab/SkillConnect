@@ -20,7 +20,11 @@ let appState = {
   chats: [...initialChats],
   notifications: [...initialNotifications],
   selectedProviderForBooking: null,
-  bookingType: 'barter'
+  bookingType: 'barter',
+  platformCommission: {
+    workerCommissionPercent: 8,
+    customerBookingFee: 20
+  }
 };
 
 // Global Leaflet Map Instance Variables
@@ -28,25 +32,56 @@ let leafletMapInstance = null;
 let leafletMarkersGroup = null;
 let leafletRadiusCircle = null;
 
+function renderAvatar(name, size = 64, extraClass = '') {
+  const cleanName = (name || 'U').trim();
+  const parts = cleanName.split(/\s+/).filter(Boolean);
+  let initials = 'U';
+  if (parts.length >= 2) {
+    initials = (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  } else if (parts.length === 1 && parts[0].length >= 2) {
+    initials = parts[0].slice(0, 2).toUpperCase();
+  } else if (parts.length === 1) {
+    initials = parts[0][0].toUpperCase();
+  }
+  const fontSize = Math.max(11, Math.round(size * 0.38)) + 'px';
+  return `<div class="avatar-badge ${extraClass}" style="width: ${size}px; height: ${size}px; font-size: ${fontSize};" title="${cleanName}">${initials}</div>`;
+}
+
 // Initialize Application
 document.addEventListener('DOMContentLoaded', () => {
   renderMain();
   setupEventListeners();
 });
 
-function setupEventListeners() {}
+function setupEventListeners() {
+  const modalOverlay = document.getElementById('bookingModal');
+  if (modalOverlay) {
+    modalOverlay.addEventListener('click', (e) => {
+      if (e.target === modalOverlay) {
+        closeModal('bookingModal');
+      }
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeModal('bookingModal');
+    }
+  });
+}
 
 function renderMain() {
   renderHeader();
   const container = document.getElementById('tabMainContainer');
   if (!container) return;
 
+  if (appState.authMode === 'registerWorker') {
+    container.innerHTML = getWorkerRegisterPageHTML();
+    return;
+  }
+
   if (!appState.isLoggedIn) {
-    if (appState.authMode === 'registerWorker') {
-      container.innerHTML = getWorkerRegisterPageHTML();
-    } else {
-      container.innerHTML = getLoginPageHTML();
-    }
+    container.innerHTML = getLoginPageHTML();
     return;
   }
 
@@ -271,16 +306,9 @@ function getWorkerRegisterPageHTML() {
             <div class="form-group">
               <label class="form-label">Primary Skill Category *</label>
               <select id="regCategorySelect" class="form-select" required>
-                <option value="electrician">Electrician</option>
-                <option value="plumber">Plumber</option>
-                <option value="tutor">Tutor</option>
-                <option value="designer">Designer</option>
-                <option value="carpenter">Carpenter</option>
-                <option value="mechanic">Mechanic</option>
-                <option value="beautician">Beautician</option>
-                <option value="freelancer">Freelancer</option>
-                <option value="driver">Driver</option>
-                <option value="homeservice">Home Services</option>
+                ${initialCategories.filter(c => c.id !== 'all').map(cat => `
+                  <option value="${cat.id}">${cat.icon ? cat.icon + ' ' : ''}${cat.name}</option>
+                `).join('')}
               </select>
             </div>
             <div class="form-group">
@@ -303,9 +331,18 @@ function getWorkerRegisterPageHTML() {
             <input type="text" id="regSeekingSkillInput" class="form-input" placeholder="e.g. Spoken English, Guitar Lessons, Python Basics">
           </div>
 
-          <div class="form-group">
-            <label class="form-label">Locality / City *</label>
-            <input type="text" id="regLocationInput" class="form-input" required placeholder="e.g. Koramangala, Bengaluru">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label class="form-label">Locality / City *</label>
+              <input type="text" id="regLocationInput" class="form-input" required placeholder="e.g. Koramangala, Bengaluru">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Hourly Working Rate (₹/hr) *</label>
+              <div style="position: relative;">
+                <span style="position: absolute; left: 0.9rem; top: 50%; transform: translateY(-50%); font-weight: 800; color: #09090B;">₹</span>
+                <input type="number" id="regHourlyRateInput" class="form-input" required min="50" max="10000" step="10" value="200" style="padding-left: 2.2rem; font-weight: 700;">
+              </div>
+            </div>
           </div>
 
           <div class="form-group">
@@ -329,7 +366,7 @@ function getWorkerRegisterPageHTML() {
         <div style="text-align: center; border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 0.5rem;">
           <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Already registered?</p>
           <button class="btn-secondary" style="width: 100%; justify-content: center;" onclick="switchAuthMode('login')">
-            Back to Sign In
+            ${appState.isLoggedIn ? '← Back to Platform' : 'Back to Sign In'}
           </button>
         </div>
       </div>
@@ -411,6 +448,7 @@ function loginWithWorkerProfile(worker) {
   };
 
   appState.isLoggedIn = true;
+  appState.authMode = 'login';
   appState.loggedInUser = workerAccount;
   appState.currentRole = 'worker';
   appState.activeTab = 'worker';
@@ -453,6 +491,8 @@ async function handleWorkerRegisterSubmit(e) {
   const offeredSkill = document.getElementById('regOfferedSkillInput')?.value || 'Skilled Services';
   const seekingSkill = document.getElementById('regSeekingSkillInput')?.value || 'Skill Exchange';
   const locationName = document.getElementById('regLocationInput')?.value || 'Bengaluru';
+  const hourlyRateInput = parseFloat(document.getElementById('regHourlyRateInput')?.value);
+  const hourlyRate = (!isNaN(hourlyRateInput) && hourlyRateInput > 0) ? hourlyRateInput : 150;
   const bio = document.getElementById('regBioInput')?.value || 'Experienced skilled professional.';
   const barterAvailable = document.getElementById('regBarterCheckbox')?.checked ?? true;
 
@@ -466,14 +506,14 @@ async function handleWorkerRegisterSubmit(e) {
     password: password,
     category: category,
     categoryName: categoryObj.name,
-    avatar: 'https://images.unsplash.com/photo-1540569014015-19a7be504e3a?w=150&auto=format&fit=crop&q=80',
+    avatar: '',
     rating: 5.0,
     reviewsCount: 1,
     distanceKm: 0.5,
     locationName: `${locationName} (0.5 km away)`,
     lat: 12.9716,
     lng: 77.5946,
-    hourlyRate: 100,
+    hourlyRate: hourlyRate,
     isVerified: true,
     barterAvailable: barterAvailable,
     offeredSkill: offeredSkill,
@@ -621,7 +661,7 @@ function renderHeader() {
 
       <!-- User Profile Card & Logout -->
       <div class="user-badge-pill">
-        <img src="${u.avatar}" alt="${u.name}" class="user-avatar">
+        ${renderAvatar(u.name, 32, 'user-avatar')}
         <div>
           <div style="font-size: 0.85rem; font-weight: 700; color: #09090B;">${u.name}</div>
           <div style="font-size: 0.7rem; color: var(--text-muted); font-weight: 600;">${u.badge}</div>
@@ -680,12 +720,24 @@ function renderCurrentTab() {
 
 function getWorkerViewHTML() {
   const workerProfile = appState.providers.find(p => p.id === appState.loggedInUser.id) || appState.providers[0];
+  const workerBookings = appState.bookings.filter(b => b.providerId === workerProfile.id || b.providerId === workerProfile.workerId);
+  
+  // Calculate worker working hours and commission payment stats
+  const completedOrLoggedBookings = workerBookings.filter(b => b.type !== 'barter' && (b.status === 'Completed' || b.hoursLogged));
+  const totalHoursBilled = workerBookings.reduce((sum, b) => {
+    if (b.type === 'barter') return sum + (parseFloat(b.hours) || 2);
+    if (b.status === 'Completed' || b.hoursLogged) return sum + (parseFloat(b.hours) || 0);
+    return sum;
+  }, 0);
+  const totalGrossEarnings = completedOrLoggedBookings.reduce((sum, b) => sum + (parseFloat(b.grossAmount) || 0), 0);
+  const totalWorkerCommissionsPaid = completedOrLoggedBookings.reduce((sum, b) => sum + (parseFloat(b.workerCommission) || 0), 0);
+  const totalNetTakeHome = totalGrossEarnings - totalWorkerCommissionsPaid;
 
   return `
     <div class="diagram-canvas-wrap" style="margin-bottom: 2rem;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
         <div style="display: flex; align-items: center; gap: 1.2rem;">
-          <img src="${workerProfile.avatar}" style="width: 70px; height: 70px; border-radius: 50%; border: 3px solid var(--border-color); object-fit: cover;">
+          ${renderAvatar(workerProfile.name, 70)}
           <div>
             <h2>🛠️ Worker Portal: ${workerProfile.name}</h2>
             <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.35rem;">
@@ -694,12 +746,24 @@ function getWorkerViewHTML() {
               <span style="color: var(--text-muted); font-size: 0.78rem;">📧 ${workerProfile.email}</span>
             </div>
             <div style="color: var(--text-muted); font-weight: 700; margin-top: 0.3rem;">${workerProfile.categoryName}</div>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.2rem;">Manage incoming service requests & skill barter exchange proposals for your account.</p>
+            
+            <!-- Working Hourly Rate Badge & Quick Edit Button -->
+            <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.5rem;">
+              <span class="hourly-rate-pill" style="font-size: 0.85rem; padding: 0.35rem 0.8rem;">
+                ⏱️ Base Rate: ₹${workerProfile.hourlyRate || 150} / hour
+              </span>
+              <span class="payout-tag" style="font-size: 0.78rem;">
+                💰 92% Net Take-Home (8% Platform Commission)
+              </span>
+              <button class="btn-sm-barter" style="padding: 0.35rem 0.8rem; font-size: 0.78rem;" onclick="openEditWorkerRateModal('${workerProfile.id}')">
+                ✏️ Edit Working Rate
+              </button>
+            </div>
           </div>
         </div>
         <div style="text-align: right;">
           <span class="barter-badge" style="margin: 0; padding: 0.5rem 1rem; font-size: 0.85rem;">
-            🤝 Barter Status: Active
+            🤝 Barter Status: Active (0% Free)
           </span>
           <div style="margin-top: 0.5rem; font-weight: 800; font-size: 1.1rem; color: #09090B;">
             ⭐ ${workerProfile.rating} <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;">(${workerProfile.completedJobs || 120}+ jobs completed)</span>
@@ -707,7 +771,31 @@ function getWorkerViewHTML() {
         </div>
       </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin-top: 1.5rem; background: #F8FAFC; padding: 1.2rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+      <!-- Worker Working Hours, Gross & Net Take-Home Metrics -->
+      <div class="worker-earnings-grid">
+        <div class="worker-stat-card">
+          <span class="worker-stat-title">⏱️ Base Working Rate</span>
+          <span class="worker-stat-value">₹${workerProfile.hourlyRate || 150}<span style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500;"> / hr</span></span>
+          <span class="worker-stat-sub">Billed to customers per working hour</span>
+        </div>
+        <div class="worker-stat-card">
+          <span class="worker-stat-title">⏳ Total Billed Hours</span>
+          <span class="worker-stat-value">${totalHoursBilled} <span style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500;">hrs</span></span>
+          <span class="worker-stat-sub">Across all customer booking requests</span>
+        </div>
+        <div class="worker-stat-card">
+          <span class="worker-stat-title">💼 Gross Service Bookings</span>
+          <span class="worker-stat-value">₹${totalGrossEarnings}</span>
+          <span class="worker-stat-sub" style="color: #DC2626;">-₹${totalWorkerCommissionsPaid} (8% Platform Commission)</span>
+        </div>
+        <div class="worker-stat-card" style="background: #F0FDF4; border-color: #86EFAC;">
+          <span class="worker-stat-title" style="color: #166534;">💰 Net Take-Home Payout</span>
+          <span class="worker-stat-value" style="color: #15803D;">₹${totalNetTakeHome}</span>
+          <span class="worker-stat-sub" style="color: #166534; font-weight: 700;">Direct earnings in worker pocket</span>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; background: #F8FAFC; padding: 1.2rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
         <div>
           <strong style="color: #09090B; font-size: 0.85rem;">⚡ Skill You Offer:</strong>
           <div style="font-size: 0.95rem; margin-top: 0.3rem; color: #09090B;">${workerProfile.offeredSkill}</div>
@@ -721,81 +809,118 @@ function getWorkerViewHTML() {
 
     <!-- Incoming Job Requests Table -->
     <div class="diagram-canvas-wrap">
-      ${(() => {
-        const workerBookings = appState.bookings.filter(b => b.providerId === workerProfile.id || b.providerId === workerProfile.workerId);
-        return `
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-            <h3>📥 Requests Specifically Sent to You (${workerProfile.name})</h3>
-            <span class="badge-pill" style="margin: 0; background: #09090B; color: #FFFFFF; font-size: 0.75rem;">
-              🎯 ${workerBookings.length} ${workerBookings.length === 1 ? 'Request' : 'Requests'} for ${workerProfile.workerId || workerProfile.id}
-            </span>
-          </div>
-          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.2rem;">
-            Private Worker Inbox: Only customer requests submitted directly to your Worker ID (${workerProfile.workerId || workerProfile.id}) appear here. Other workers cannot see or receive your requests.
-          </p>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+        <h3>📥 Requests Specifically Sent to You (${workerProfile.name})</h3>
+        <span class="badge-pill" style="margin: 0; background: #09090B; color: #FFFFFF; font-size: 0.75rem;">
+          🎯 ${workerBookings.length} ${workerBookings.length === 1 ? 'Request' : 'Requests'} for ${workerProfile.workerId || workerProfile.id}
+        </span>
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.2rem;">
+        Private Worker Inbox: Only customer requests submitted directly to your Worker ID (${workerProfile.workerId || workerProfile.id}) appear here. Review working hours, 8% commission deductions, and net take-home payouts.
+      </p>
 
-          <div class="table-responsive">
-            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
-              <thead>
-                <tr style="border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.82rem; text-transform: uppercase;">
-                  <th style="padding: 1rem;">Booking ID</th>
-                  <th style="padding: 1rem;">Customer</th>
-                  <th style="padding: 1rem;">Requested Service</th>
-                  <th style="padding: 1rem;">Type / Offer</th>
-                  <th style="padding: 1rem;">Date & Time</th>
-                  <th style="padding: 1rem;">Status</th>
-                  <th style="padding: 1rem;">Worker Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${workerBookings.length === 0 ? `
-                  <tr>
-                    <td colspan="7" style="text-align: center; padding: 3rem 1.5rem; color: var(--text-muted);">
-                      <div style="font-size: 2.2rem; margin-bottom: 0.6rem;">📭</div>
-                      <strong style="color: #09090B; font-size: 1.05rem; display: block; margin-bottom: 0.35rem;">No customer requests for your profile yet</strong>
-                      <p style="font-size: 0.85rem; max-width: 500px; margin: 0 auto; line-height: 1.4;">
-                        Customer requests are private and strictly routed to the requested worker only. When a customer books or proposes a barter specifically with <strong>${workerProfile.name}</strong> (${workerProfile.workerId || workerProfile.id}), their request will appear here directly.
-                      </p>
-                    </td>
-                  </tr>
-                ` : workerBookings.map(b => `
-                  <tr style="border-bottom: 1px solid var(--border-color);">
-                    <td style="padding: 1rem; font-weight: 700; color: #09090B;">${b.id}</td>
-                    <td style="padding: 1rem; font-weight: 700;">${b.customerName || 'Rahul Verma'}</td>
-                    <td style="padding: 1rem;">
-                      <strong>${b.serviceTitle}</strong>
-                      <div style="font-size: 0.78rem; color: var(--text-muted);">${b.userNotes || 'No special notes'}</div>
-                    </td>
-                    <td style="padding: 1rem;">
-                      ${b.type === 'barter' ? `
-                        <span class="barter-badge" style="margin: 0;">🤝 Offered: ${b.offeredSkill}</span>
-                      ` : `
-                        <span class="barter-badge" style="margin: 0; background: #F1F5F9; color: #09090B; border: 1px solid var(--border-color);">💳 Direct Booking</span>
-                      `}
-                    </td>
-                    <td style="padding: 1rem; color: var(--text-muted);">${b.date} at ${b.time}</td>
-                    <td style="padding: 1rem;">
-                      ${b.status === 'Confirmed' ? `<span style="color: #09090B; font-weight: 700;">● Accepted</span>` : ''}
-                      ${b.status === 'Pending' ? `<span style="color: #D97706; font-weight: 700;">● Pending Response</span>` : ''}
-                      ${b.status === 'Completed' ? `<span style="color: #09090B; font-weight: 700;">✓ Completed</span>` : ''}
-                    </td>
-                    <td style="padding: 1rem;">
-                      <div style="display: flex; gap: 0.4rem;">
-                        ${b.status === 'Pending' ? `
-                          <button class="btn-sm-barter" onclick="updateWorkerBookingStatus('${b.id}', 'Confirmed')">✓ Accept Request</button>
-                          <button class="btn-sm-book" onclick="openChatWithProvider('${b.providerId}')">💬 Chat</button>
-                        ` : `
-                          <button class="btn-sm-book" onclick="openChatWithProvider('${b.providerId}')">💬 Chat</button>
-                        `}
-                      </div>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          </div>
-        `;
-      })()}
+      <div class="table-responsive">
+        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.82rem; text-transform: uppercase;">
+              <th style="padding: 1rem;">Booking ID</th>
+              <th style="padding: 1rem;">Customer</th>
+              <th style="padding: 1rem;">Requested Service</th>
+              <th style="padding: 1rem;">Working Hours</th>
+              <th style="padding: 1rem;">Gross & Commission</th>
+              <th style="padding: 1rem;">Net Take-Home</th>
+              <th style="padding: 1rem;">Date & Time</th>
+              <th style="padding: 1rem;">Status</th>
+              <th style="padding: 1rem;">Worker Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${workerBookings.length === 0 ? `
+              <tr>
+                <td colspan="9" style="text-align: center; padding: 3rem 1.5rem; color: var(--text-muted);">
+                  <div style="font-size: 2.2rem; margin-bottom: 0.6rem;">📭</div>
+                  <strong style="color: #09090B; font-size: 1.05rem; display: block; margin-bottom: 0.35rem;">No customer requests for your profile yet</strong>
+                  <p style="font-size: 0.85rem; max-width: 500px; margin: 0 auto; line-height: 1.4;">
+                    Customer requests are private and strictly routed to the requested worker only. When a customer books working hours specifically with <strong>${workerProfile.name}</strong> (${workerProfile.workerId || workerProfile.id}), their request will appear here directly.
+                  </p>
+                </td>
+              </tr>
+            ` : workerBookings.map(b => {
+              const isBarter = b.type === 'barter';
+              const rate = b.hourlyRate || workerProfile.hourlyRate || 150;
+              const hasHours = isBarter || b.status === 'Completed' || b.hoursLogged;
+              const hours = b.hours || (isBarter ? 2 : 0);
+              const gross = isBarter ? 0 : (b.grossAmount || Math.round(hours * rate));
+              const commission = isBarter ? 0 : (b.workerCommission ?? Math.round(gross * 0.08));
+              const netPayout = isBarter ? 0 : (b.workerNetPayout ?? (gross - commission));
+
+              return `
+              <tr style="border-bottom: 1px solid var(--border-color);">
+                <td style="padding: 1rem; font-weight: 700; color: #09090B;">${b.id}</td>
+                <td style="padding: 1rem; font-weight: 700;">${b.customerName || 'Rahul Verma'}</td>
+                <td style="padding: 1rem;">
+                  <strong>${b.serviceTitle}</strong>
+                  <div style="font-size: 0.78rem; color: var(--text-muted);">${b.userNotes || 'No special notes'}</div>
+                </td>
+                <td style="padding: 1rem;">
+                  ${isBarter ? `
+                    <span class="barter-badge" style="margin: 0;">🤝 ${hours} hr Barter</span>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Mutual Exchange</div>
+                  ` : hasHours ? `
+                    <div style="font-weight: 700; color: #09090B; font-size: 0.92rem;">⏱️ ${hours} ${hours === 1 ? 'Hour' : 'Hours'}</div>
+                    <div style="font-size: 0.75rem; color: #16A34A; font-weight: 600;">✓ Completed Log (@ ₹${rate}/hr)</div>
+                  ` : `
+                    <span class="badge-pill" style="background: #FEF3C7; color: #92400E; font-size: 0.72rem;">⏳ Time Not Yet Logged</span>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Rate: ₹${rate}/hr</div>
+                  `}
+                </td>
+                <td style="padding: 1rem;">
+                  ${isBarter ? `
+                    <span style="color: var(--text-muted); font-size: 0.85rem;">Skill Barter (₹0)</span>
+                  ` : hasHours ? `
+                    <div style="font-size: 0.85rem; font-weight: 700; color: #09090B;">Gross: ₹${gross}</div>
+                    <span class="commission-badge">-₹${commission} (8% Comm)</span>
+                  ` : `
+                    <span style="font-size: 0.78rem; color: var(--text-muted);">Calculated on finish</span>
+                  `}
+                </td>
+                <td style="padding: 1rem;">
+                  ${isBarter ? `
+                    <strong style="color: #09090B;">Zero Cash</strong>
+                  ` : hasHours ? `
+                    <strong class="payout-tag">₹${netPayout} Net</strong>
+                    <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem;">via ${b.paymentMethod ? b.paymentMethod.split(' ')[0] : 'UPI'}</div>
+                  ` : `
+                    <span style="font-size: 0.78rem; color: var(--text-muted);">Log hours to finalize</span>
+                  `}
+                </td>
+                <td style="padding: 1rem; color: var(--text-muted);">${b.date} at ${b.time}</td>
+                <td style="padding: 1rem;">
+                  ${b.status === 'Confirmed' ? `<span style="color: #09090B; font-weight: 700;">● Accepted</span>` : ''}
+                  ${b.status === 'Pending' ? `<span style="color: #D97706; font-weight: 700;">● Pending Response</span>` : ''}
+                  ${b.status === 'Completed' ? `<span style="color: #16A34A; font-weight: 700;">✓ Completed</span>` : ''}
+                </td>
+                <td style="padding: 1rem;">
+                  <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
+                    ${b.status === 'Pending' ? `
+                      <button class="btn-sm-barter" onclick="updateWorkerBookingStatus('${b.id}', 'Confirmed')">✓ Accept</button>
+                    ` : ''}
+                    ${b.status !== 'Completed' && !isBarter ? `
+                      <button class="btn-sm-barter" style="background: #16A34A; border-color: #16A34A;" onclick="openLogWorkerHoursModal('${b.id}')">⏱️ Log Hours & Complete</button>
+                    ` : ''}
+                    ${b.status !== 'Completed' && isBarter ? `
+                      <button class="btn-sm-barter" onclick="updateWorkerBookingStatus('${b.id}', 'Completed')">✓ Complete Barter</button>
+                    ` : ''}
+                    <button class="btn-sm-book" onclick="openChatWithProvider('${b.providerId}')">💬 Chat</button>
+                    <button class="btn-sm-book" style="background: #F1F5F9; color: #09090B; border: 1px solid var(--border-color);" onclick="showBookingReceipt('${b.id}')">🧾 Receipt</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
     </div>
   `;
 }
@@ -980,7 +1105,7 @@ function renderProvidersGrid() {
       <div>
         <div class="card-top">
           <div class="provider-img-wrap">
-            <img src="${p.avatar}" alt="${p.name}" class="provider-img">
+            ${renderAvatar(p.name, 64, 'provider-img')}
             ${p.isVerified ? `<div class="verified-badge" title="Verified Professional">✓</div>` : ''}
           </div>
           <div class="provider-meta">
@@ -1010,14 +1135,19 @@ function renderProvidersGrid() {
       </div>
 
       <div class="card-footer">
-        <div class="rate-tag" style="font-size: 0.85rem; font-weight: 700; color: #09090B;">
-          ${p.barterAvailable ? '🤝 Skill Exchange' : '⚡ Direct Hire'}
+        <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+          <div class="hourly-rate-pill" style="align-self: flex-start;">
+            ⏱️ ₹${p.hourlyRate || 150} / hr
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">
+            ${p.barterAvailable ? '🤝 Barter or Hourly Pay' : '⚡ Hourly Payment'}
+          </div>
         </div>
         <div class="card-btn-group">
           ${p.barterAvailable ? `
             <button class="btn-sm-barter" onclick="openBookingModal('${p.id}', 'barter')">🤝 Barter</button>
           ` : ''}
-          <button class="btn-sm-book" onclick="openBookingModal('${p.id}', 'monetary')">Book</button>
+          <button class="btn-sm-book" onclick="openBookingModal('${p.id}', 'monetary')">⏱️ Hire Worker (₹${p.hourlyRate || 150}/hr)</button>
         </div>
       </div>
     </div>
@@ -1082,10 +1212,10 @@ function initOrUpdateLeafletMap() {
           <div><strong>Offers:</strong> ${p.offeredSkill}</div>
           ${p.barterAvailable ? `<div style="color: #64748B; margin-top: 2px;"><strong>Wants:</strong> ${p.seekingSkill}</div>` : ''}
         </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 0.5rem;">
-          <span style="font-size: 0.8rem; font-weight: 700; color: #09090B;">${p.barterAvailable ? '🤝 Barter Pro' : '⚡ Verified Pro'}</span>
-          <button class="btn-sm-barter" style="padding: 0.4rem 0.8rem; font-size: 0.78rem;" onclick="openBookingModal('${p.id}', '${p.barterAvailable ? 'barter' : 'monetary'}')">
-            ${p.barterAvailable ? '🤝 Barter / Book' : '💳 Book Now'}
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 0.6rem;">
+          <span class="hourly-rate-pill" style="font-size: 0.75rem;">⏱️ ₹${p.hourlyRate || 150}/hr</span>
+          <button class="btn-sm-barter" style="padding: 0.35rem 0.75rem; font-size: 0.78rem;" onclick="openBookingModal('${p.id}', 'monetary')">
+            ⏱️ Hire Worker
           </button>
         </div>
       </div>
@@ -1121,7 +1251,9 @@ function getBarterHubViewHTML() {
         <div class="provider-card">
           <div>
             <div class="card-top">
-              <img src="${p.avatar}" alt="${p.name}" class="provider-img">
+              <div class="provider-img-wrap">
+                ${renderAvatar(p.name, 64, 'provider-img')}
+              </div>
               <div class="provider-meta">
                 <h4 class="provider-name">${p.name}</h4>
                 <div class="provider-cat">${p.categoryName}</div>
@@ -1163,7 +1295,7 @@ function getBookingsViewHTML() {
     <div class="diagram-canvas-wrap">
       <div class="diagram-header-bar" style="margin-bottom: 1.5rem;">
         <h3>📅 My Service Bookings & Skill Barter Contracts</h3>
-        <p>Track pending requests, active barter exchanges, payment receipts, and review history.</p>
+        <p>Track pending requests, active working hours, hourly payment breakdowns, and official receipts.</p>
       </div>
 
       <div class="table-responsive">
@@ -1172,14 +1304,22 @@ function getBookingsViewHTML() {
             <tr style="border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.82rem; text-transform: uppercase;">
               <th style="padding: 1rem;">Booking ID</th>
               <th style="padding: 1rem;">Service Provider</th>
-              <th style="padding: 1rem;">Type</th>
+              <th style="padding: 1rem;">Working Hours & Rate</th>
+              <th style="padding: 1rem;">Payment Option & Total</th>
               <th style="padding: 1rem;">Date & Time</th>
               <th style="padding: 1rem;">Status</th>
               <th style="padding: 1rem;">Actions</th>
             </tr>
           </thead>
           <tbody>
-            ${appState.bookings.map(b => `
+            ${appState.bookings.map(b => {
+              const isBarter = b.type === 'barter';
+              const rate = b.hourlyRate || 150;
+              const hasHours = isBarter || b.status === 'Completed' || b.hoursLogged;
+              const hours = b.hours || (isBarter ? 2 : 0);
+              const totalAmount = isBarter ? 0 : (b.amount || Math.round(hours * rate));
+
+              return `
               <tr style="border-bottom: 1px solid var(--border-color);">
                 <td style="padding: 1rem; font-weight: 700; color: #09090B;">${b.id}</td>
                 <td style="padding: 1rem;">
@@ -1187,30 +1327,59 @@ function getBookingsViewHTML() {
                   <span style="font-size: 0.78rem; color: var(--text-muted);">${b.serviceTitle}</span>
                 </td>
                 <td style="padding: 1rem;">
-                  ${b.type === 'barter' ? `
-                    <span class="barter-badge" style="margin: 0;">🤝 ${b.paymentMethod}</span>
+                  ${isBarter ? `
+                    <span class="barter-badge" style="margin: 0;">🤝 ${hours} hr Barter Session</span>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Offer: ${b.offeredSkill}</div>
+                  ` : hasHours ? `
+                    <div style="font-weight: 700; color: #09090B; font-size: 0.92rem;">⏱️ ${hours} ${hours === 1 ? 'Hour' : 'Hours'}</div>
+                    <div style="font-size: 0.78rem; color: #16A34A; font-weight: 600;">✓ Completed by Worker (@ ₹${rate}/hr)</div>
                   ` : `
-                    <span class="barter-badge" style="margin: 0; background: #F1F5F9; color: #09090B; border: 1px solid var(--border-color);">💳 Direct Booking</span>
+                    <div style="font-weight: 700; color: #09090B;">Rate: ₹${rate}/hr</div>
+                    <span style="font-size: 0.75rem; color: #D97706; font-weight: 600;">⏳ Worker will log time on completion</span>
+                  `}
+                </td>
+                <td style="padding: 1rem;">
+                  ${isBarter ? `
+                    <strong style="color: #09090B;">₹0 (Skill Barter)</strong>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Zero Monetary Fee</div>
+                  ` : hasHours ? `
+                    <strong style="color: #09090B; font-size: 0.98rem;">₹${totalAmount}</strong>
+                    <div style="font-size: 0.75rem; color: #16A34A; font-weight: 700;">✓ Finalized Bill</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      💳 ${b.paymentMethod || 'UPI Hourly'}
+                    </div>
+                  ` : `
+                    <strong style="color: #09090B;">Pending Hours Log</strong>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">+₹${b.customerFee || 20} Booking Fee</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      💳 ${b.paymentMethod || 'Pay after completion'}
+                    </div>
                   `}
                 </td>
                 <td style="padding: 1rem; color: var(--text-muted);">${b.date} at ${b.time}</td>
                 <td style="padding: 1rem;">
                   ${b.status === 'Confirmed' ? `<span style="color: #09090B; font-weight: 700;">● Confirmed</span>` : ''}
                   ${b.status === 'Pending' ? `<span style="color: var(--text-muted); font-weight: 700;">● Pending Approval</span>` : ''}
-                  ${b.status === 'Completed' ? `<span style="color: #09090B; font-weight: 700;">✓ Completed</span>` : ''}
+                  ${b.status === 'Completed' ? `<span style="color: #16A34A; font-weight: 700;">✓ Completed</span>` : ''}
                 </td>
                 <td style="padding: 1rem;">
-                  <div style="display: flex; gap: 0.4rem;">
+                  <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
                     <button class="btn-sm-book" onclick="openChatWithProvider('${b.providerId}')">💬 Chat</button>
+                    <button class="btn-sm-book" style="background: #F1F5F9; color: #09090B; border: 1px solid var(--border-color);" onclick="showBookingReceipt('${b.id}')">🧾 Receipt</button>
                     ${b.status !== 'Completed' ? `
-                      <button class="btn-sm-barter" onclick="markBookingComplete('${b.id}')">✓ Mark Done</button>
+                      ${isBarter ? `
+                        <button class="btn-sm-barter" onclick="markBookingComplete('${b.id}')">✓ Done</button>
+                      ` : `
+                        <button class="btn-sm-book" style="font-size: 0.75rem;" onclick="showToast('Worker logs actual working time on-site to finalize your bill!')">ℹ️ Info</button>
+                      `}
                     ` : `
                       <button class="btn-sm-book" onclick="openReviewModal('${b.providerId}')">★ Review</button>
                     `}
                   </div>
                 </td>
               </tr>
-            `).join('')}
+            `;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -1243,7 +1412,7 @@ function getChatViewHTML() {
         </div>
         ${appState.chats.map(c => `
           <div class="chat-user-item ${c.providerId === activeChat.providerId ? 'active' : ''}" onclick="selectChatProvider('${c.providerId}')">
-            <img src="${c.avatar}" class="provider-img" style="width: 40px; height: 40px;">
+            ${renderAvatar(c.providerName, 40, 'provider-img')}
             <div>
               <div style="font-weight: 700; font-size: 0.9rem;">${c.providerName}</div>
               <div style="font-size: 0.75rem; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; overflow: hidden; max-width: 170px;">
@@ -1257,7 +1426,7 @@ function getChatViewHTML() {
       <!-- Main Chat Area -->
       <div class="chat-main">
         <div class="chat-header">
-          <img src="${activeChat.avatar}" class="provider-img" style="width: 38px; height: 38px;">
+          ${renderAvatar(activeChat.providerName, 38, 'provider-img')}
           <div>
             <div style="font-weight: 800;">${activeChat.providerName}</div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">● Online | Verified Skill Provider</div>
@@ -1344,33 +1513,166 @@ async function sendMessage() {
    ========================================================================== */
 
 function getAdminDashboardViewHTML() {
+  const totalGMV = appState.bookings.reduce((sum, b) => sum + (b.grossAmount || (b.type === 'monetary' ? b.amount : 0) || 0), 0);
+  const totalPlatformRevenue = appState.bookings.reduce((sum, b) => sum + (b.platformRevenue || 0), 0);
+  const totalWorkerCommission = appState.bookings.reduce((sum, b) => sum + (b.workerCommission || 0), 0);
+  const totalCustomerFees = appState.bookings.reduce((sum, b) => sum + (b.customerFee || 0), 0);
+  const totalWorkerPayouts = appState.bookings.reduce((sum, b) => sum + (b.workerNetPayout || 0), 0);
+  const commPercent = appState.platformCommission?.workerCommissionPercent ?? 8;
+  const custFee = appState.platformCommission?.customerBookingFee ?? 20;
+
   return `
     <div class="diagram-canvas-wrap" style="margin-bottom: 2rem;">
-      <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
         <div>
-          <h2>🛡️ Administrator Control Center</h2>
-          <p style="color: var(--text-muted); margin-top: 0.3rem;">System Management, User Verification Moderation, & Complaints.</p>
+          <h2>🛡️ Administrator & Monetization Control Center</h2>
+          <p style="color: var(--text-muted); margin-top: 0.3rem;">Platform Revenue Analytics, Worker Commission Ledger, & Account Moderation.</p>
         </div>
-        <span class="badge-pill" style="background: #09090B; color: #FFFFFF;">● Admin Privileges Active</span>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span class="badge-pill" style="background: #16A34A; color: #FFFFFF;">● Live Monetization Engine</span>
+          <span class="badge-pill" style="background: #09090B; color: #FFFFFF;">● Admin Privileges Active</span>
+        </div>
       </div>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.2rem; margin-top: 1.5rem;">
-        <div style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1.2rem; border-radius: var(--radius-md);">
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Total Registered Users</div>
-          <div style="font-size: 1.8rem; font-weight: 800; color: #09090B; margin-top: 0.4rem;">${adminStats.totalUsers}</div>
+      <!-- Financial & Platform KPIs Grid -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1.2rem; margin-top: 1.5rem;">
+        <div style="background: linear-gradient(135deg, #09090B 0%, #1E293B 100%); color: #FFFFFF; padding: 1.3rem; border-radius: var(--radius-md); box-shadow: 0 4px 15px rgba(0,0,0,0.12);">
+          <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: #94A3B8;">Total Platform Revenue</div>
+          <div style="font-size: 1.9rem; font-weight: 800; color: #4ADE80; margin-top: 0.4rem;">₹${totalPlatformRevenue.toLocaleString('en-IN')}</div>
+          <div style="font-size: 0.72rem; color: #CBD5E1; margin-top: 0.3rem;">Worker Commissions + Booking Fees</div>
         </div>
+
         <div style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1.2rem; border-radius: var(--radius-md);">
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Verified Service Pros</div>
-          <div style="font-size: 1.8rem; font-weight: 800; color: #09090B; margin-top: 0.4rem;">${adminStats.verifiedProviders}</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Gross Service GMV</div>
+          <div style="font-size: 1.8rem; font-weight: 800; color: #09090B; margin-top: 0.4rem;">₹${totalGMV.toLocaleString('en-IN')}</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem;">Total gross customer billing</div>
         </div>
+
         <div style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1.2rem; border-radius: var(--radius-md);">
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Total Barter Exchanges</div>
-          <div style="font-size: 1.8rem; font-weight: 800; color: #09090B; margin-top: 0.4rem;">${adminStats.barterExchangesCount}</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Worker Commissions (${commPercent}%)</div>
+          <div style="font-size: 1.8rem; font-weight: 800; color: #DC2626; margin-top: 0.4rem;">₹${totalWorkerCommission.toLocaleString('en-IN')}</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem;">Retained from worker payouts</div>
         </div>
+
         <div style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1.2rem; border-radius: var(--radius-md);">
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Active Complaints</div>
-          <div style="font-size: 1.8rem; font-weight: 800; color: #09090B; margin-top: 0.4rem;">${adminStats.activeComplaints}</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Customer Booking Fees (₹${custFee})</div>
+          <div style="font-size: 1.8rem; font-weight: 800; color: #2563EB; margin-top: 0.4rem;">₹${totalCustomerFees.toLocaleString('en-IN')}</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem;">Platform safety & service charges</div>
         </div>
+
+        <div style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1.2rem; border-radius: var(--radius-md);">
+          <div style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Net Worker Payouts</div>
+          <div style="font-size: 1.8rem; font-weight: 800; color: #16A34A; margin-top: 0.4rem;">₹${totalWorkerPayouts.toLocaleString('en-IN')}</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem;">Disbursed directly to workers</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Monetization Settings & Commission Control Box -->
+    <div class="diagram-canvas-wrap" style="margin-bottom: 2rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.2rem;">
+        <div>
+          <h3>⚙️ Platform Monetization & Commission Rate Settings</h3>
+          <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.2rem;">Configure platform cut rates. Changes apply immediately to new customer bookings.</p>
+        </div>
+        <span class="badge-pill" style="background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE;">🤝 Barter Skill Exchanges: ₹0 (100% Free)</span>
+      </div>
+
+      <form onsubmit="updatePlatformCommissionSettings(event)" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.2rem; align-items: end; background: #F8FAFC; padding: 1.25rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label" style="font-size: 0.82rem;">Worker Booking Commission (%) *</label>
+          <div style="position: relative;">
+            <input type="number" id="adminWorkerCommissionInput" class="form-input" min="0" max="50" step="0.5" value="${commPercent}" required style="font-weight: 800; padding-right: 2.5rem;">
+            <span style="position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); font-weight: 800; color: var(--text-muted);">%</span>
+          </div>
+          <small style="color: var(--text-muted); display: block; margin-top: 0.3rem;">Deducted from completed worker service fees</small>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label" style="font-size: 0.82rem;">Customer Platform Booking Fee (₹) *</label>
+          <div style="position: relative;">
+            <span style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); font-weight: 800; color: #09090B;">₹</span>
+            <input type="number" id="adminCustomerFeeInput" class="form-input" min="0" max="500" step="5" value="${custFee}" required style="font-weight: 800; padding-left: 2.2rem;">
+          </div>
+          <small style="color: var(--text-muted); display: block; margin-top: 0.3rem;">Flat convenience & safety fee charged per booking</small>
+        </div>
+
+        <div>
+          <button type="submit" class="btn-primary" style="width: 100%; height: 44px;">💾 Update Commission Rates</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Live Commission Ledger & Transaction Audit -->
+    <div class="diagram-canvas-wrap" style="margin-bottom: 2rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.8rem;">
+        <div>
+          <h3>💼 Platform Commission Ledger & Financial Audit</h3>
+          <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.2rem;">Real-time breakdown of all bookings, gross billing, fees, commissions, and worker payouts.</p>
+        </div>
+        <span style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted);">${appState.bookings.length} Total Bookings Recorded</span>
+      </div>
+
+      <div class="table-responsive">
+        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--border-color); color: var(--text-muted); background: #F8FAFC;">
+              <th style="padding: 0.75rem;">Booking</th>
+              <th style="padding: 0.75rem;">Worker & Service</th>
+              <th style="padding: 0.75rem;">Customer</th>
+              <th style="padding: 0.75rem; text-align: right;">Gross Billed</th>
+              <th style="padding: 0.75rem; text-align: right;">Customer Fee</th>
+              <th style="padding: 0.75rem; text-align: right;">Worker Comm. (${commPercent}%)</th>
+              <th style="padding: 0.75rem; text-align: right;">Platform Rev.</th>
+              <th style="padding: 0.75rem; text-align: right;">Worker Payout</th>
+              <th style="padding: 0.75rem; text-align: center;">Audit Bill</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${appState.bookings.map(b => {
+              const isBarter = b.type === 'barter';
+              const gross = b.grossAmount ?? (isBarter ? 0 : (b.hours * b.hourlyRate));
+              const fee = b.customerFee ?? (isBarter ? 0 : custFee);
+              const comm = b.workerCommission ?? (isBarter ? 0 : Math.round(gross * (commPercent / 100)));
+              const rev = b.platformRevenue ?? (fee + comm);
+              const net = b.workerNetPayout ?? (isBarter ? 0 : (gross - comm));
+
+              return `
+                <tr style="border-bottom: 1px solid var(--border-color);">
+                  <td style="padding: 0.75rem;">
+                    <div style="font-weight: 800; color: #09090B;">${b.id}</div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">${b.date}</div>
+                  </td>
+                  <td style="padding: 0.75rem;">
+                    <div style="font-weight: 700; color: #09090B;">${b.providerName}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">${b.serviceTitle} (${b.hours} hrs)</div>
+                  </td>
+                  <td style="padding: 0.75rem; color: #09090B; font-weight: 600;">
+                    ${b.customerName || 'Rahul Verma'}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: right; font-weight: 800; color: #09090B;">
+                    ${isBarter ? '<span style="color: #64748B;">🤝 Barter</span>' : `₹${gross}`}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: right; font-weight: 700; color: #2563EB;">
+                    ${isBarter ? '₹0' : `+₹${fee}`}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: right;">
+                    ${isBarter ? '₹0' : `<span class="commission-badge">-₹${comm}</span>`}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: right; font-weight: 800; color: #16A34A;">
+                    ${isBarter ? '₹0' : `₹${rev}`}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: right;">
+                    ${isBarter ? '<span style="color: #64748B;">Skill Exchange</span>' : `<span class="payout-tag">₹${net}</span>`}
+                  </td>
+                  <td style="padding: 0.75rem; text-align: center;">
+                    <button class="btn-sm-book" style="padding: 0.3rem 0.6rem; font-size: 0.75rem;" onclick="showBookingReceipt('${b.id}')">🧾 Receipt</button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -1417,6 +1719,22 @@ function getAdminDashboardViewHTML() {
   `;
 }
 
+window.updatePlatformCommissionSettings = function(e) {
+  e.preventDefault();
+  const workerPct = parseFloat(document.getElementById('adminWorkerCommissionInput')?.value);
+  const custFee = parseFloat(document.getElementById('adminCustomerFeeInput')?.value);
+  if (isNaN(workerPct) || workerPct < 0 || isNaN(custFee) || custFee < 0) {
+    showToast('Please enter valid numbers for commission rates');
+    return;
+  }
+  appState.platformCommission = {
+    workerCommissionPercent: workerPct,
+    customerBookingFee: custFee
+  };
+  showToast(`✅ Monetization updated: ${workerPct}% worker commission & ₹${custFee} booking fee!`);
+  renderMain();
+};
+
 function toggleProviderVerification(providerId) {
   const p = appState.providers.find(prov => prov.id === providerId);
   if (p) {
@@ -1430,7 +1748,12 @@ function toggleProviderVerification(providerId) {
    MODALS & SUBMISSIONS
    ========================================================================== */
 
-function openBookingModal(providerId, defaultType = 'barter') {
+function isPreBookedHoursCategory(category) {
+  const sessionCategories = ['tutor', 'designer', 'freelancer', 'frontend', 'web-developer', 'photographer', 'videographer', 'dj'];
+  return sessionCategories.includes(category);
+}
+
+function openBookingModal(providerId, defaultType = 'monetary') {
   const p = appState.providers.find(prov => prov.id === providerId);
   if (!p) return;
 
@@ -1439,64 +1762,199 @@ function openBookingModal(providerId, defaultType = 'barter') {
 
   const modal = document.getElementById('bookingModal');
   const modalBody = document.getElementById('bookingModalBody');
+  const hourlyRate = p.hourlyRate || 150;
+  const isPreBooked = isPreBookedHoursCategory(p.category);
+  const initialHours = 2;
+  const initialGross = Math.round(hourlyRate * initialHours);
+  const customerFee = appState.platformCommission?.customerBookingFee ?? 20;
+  const commissionPercent = appState.platformCommission?.workerCommissionPercent ?? 8;
+  const initialWorkerCommission = Math.round(initialGross * (commissionPercent / 100));
+  const initialWorkerNet = initialGross - initialWorkerCommission;
+  const initialCustomerTotal = initialGross + customerFee;
 
   if (modal && modalBody) {
     modalBody.innerHTML = `
       <div class="modal-header">
-        <h3 class="modal-title">Request Service from ${p.name}</h3>
+        <div>
+          <h3 class="modal-title">Request Service: ${p.name}</h3>
+          <span style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Worker ID: ${p.workerId || p.id} • ${p.categoryName}</span>
+        </div>
         <button class="modal-close" onclick="closeModal('bookingModal')">✕</button>
       </div>
 
-      <div style="display: flex; gap: 0.5rem; margin-bottom: 1.2rem; background: rgba(255,255,255,0.04); padding: 0.3rem; border-radius: var(--radius-sm);">
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1.2rem; background: #F1F5F9; padding: 0.35rem; border-radius: var(--radius-sm);">
+        <button class="nav-tab ${defaultType === 'monetary' ? 'active' : ''}" style="flex: 1; justify-content: center; font-size: 0.85rem;" onclick="switchModalBookingType('monetary')">
+          ${isPreBooked ? '⏱️ Book Working Hours' : '🛠️ Request Service (Pay After Duty)'}
+        </button>
         ${p.barterAvailable ? `
-          <button class="nav-tab ${defaultType === 'barter' ? 'active' : ''}" style="flex: 1; justify-content: center;" onclick="switchModalBookingType('barter')">🤝 Skill Exchange (Barter)</button>
+          <button class="nav-tab ${defaultType === 'barter' ? 'active' : ''}" style="flex: 1; justify-content: center; font-size: 0.85rem;" onclick="switchModalBookingType('barter')">
+            🤝 Skill Exchange (Barter)
+          </button>
         ` : ''}
-        <button class="nav-tab ${defaultType === 'monetary' ? 'active' : ''}" style="flex: 1; justify-content: center;" onclick="switchModalBookingType('monetary')">💳 Direct Service Booking</button>
       </div>
 
       <form id="bookingForm" onsubmit="handleBookingSubmit(event)">
         <div class="form-group">
-          <label class="form-label">Requested Service Title</label>
+          <label class="form-label">Requested Service Title *</label>
           <input type="text" id="serviceTitleInput" class="form-input" required value="${p.offeredSkill.split('&')[0]}">
         </div>
 
         ${defaultType === 'barter' ? `
           <div class="form-group" style="background: #F8FAFC; border: 1px solid var(--border-color); padding: 1rem; border-radius: var(--radius-sm);">
-            <label class="form-label" style="color: var(--text-main);">Your Offered Skill in Return (Barter Offer)</label>
+            <label class="form-label" style="color: var(--text-main);">Your Offered Skill in Return (Barter Offer) *</label>
             <input type="text" id="offeredSkillInput" class="form-input" required placeholder="e.g. Python Programming, Guitar Basics, Spoken English">
-            <small style="color: var(--text-muted); display: block; margin-top: 0.4rem;">Provider looking for: <strong>${p.seekingSkill}</strong></small>
+            <small style="color: var(--text-muted); display: block; margin-top: 0.4rem;">Worker looking to learn: <strong>${p.seekingSkill}</strong></small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Mutual Barter Session Duration</label>
+            <div class="hour-chips-grid">
+              <button type="button" class="btn-hour-chip" data-barter-hours="1" onclick="selectBarterHours(1)">1 hr Session</button>
+              <button type="button" class="btn-hour-chip active" data-barter-hours="2" onclick="selectBarterHours(2)">2 hrs Session</button>
+              <button type="button" class="btn-hour-chip" data-barter-hours="3" onclick="selectBarterHours(3)">3 hrs Session</button>
+              <button type="button" class="btn-hour-chip" data-barter-hours="4" onclick="selectBarterHours(4)">4 hrs Session</button>
+            </div>
+            <input type="hidden" id="barterHoursInput" value="2">
+          </div>
+        ` : isPreBooked ? `
+          <!-- Worker Standard Hourly Rate Banner for Pre-booked Hours (Tutors, Designers, etc.) -->
+          <div style="background: #F8FAFC; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.85rem 1rem; margin-bottom: 1.1rem; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 700; display: block;">Session Hourly Rate</span>
+              <span style="font-size: 1.3rem; font-weight: 800; color: #09090B;">₹${hourlyRate} <span style="font-size: 0.85rem; font-weight: 500; color: var(--text-muted);">/ hour</span></span>
+            </div>
+            <div style="text-align: right;">
+              <span class="hourly-rate-pill" style="font-size: 0.78rem;">⏱️ Scheduled Hours</span>
+              <div style="font-size: 0.72rem; color: #2563EB; font-weight: 700; margin-top: 0.2rem;">₹${customerFee} Platform Booking Fee</div>
+            </div>
+          </div>
+
+          <!-- Working Hours Needed Selector for Specified Workers -->
+          <div class="form-group">
+            <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+              <span>Working Hours Required *</span>
+              <span id="hoursDisplayLabel" style="font-weight: 800; color: #09090B; font-size: 0.95rem;">${initialHours} Hours</span>
+            </label>
+            <div class="hour-chips-grid">
+              <button type="button" class="btn-hour-chip" data-hours="1" onclick="selectBookingHours(1)">1 hr</button>
+              <button type="button" class="btn-hour-chip active" data-hours="2" onclick="selectBookingHours(2)">2 hrs</button>
+              <button type="button" class="btn-hour-chip" data-hours="3" onclick="selectBookingHours(3)">3 hrs</button>
+              <button type="button" class="btn-hour-chip" data-hours="4" onclick="selectBookingHours(4)">4 hrs (Half Day)</button>
+              <button type="button" class="btn-hour-chip" data-hours="6" onclick="selectBookingHours(6)">6 hrs</button>
+              <button type="button" class="btn-hour-chip" data-hours="8" onclick="selectBookingHours(8)">8 hrs (Full Day)</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.4rem;">
+              <input type="range" id="bookingHoursSlider" min="0.5" max="12" step="0.5" value="${initialHours}" class="form-range" style="flex: 1; accent-color: #09090B; cursor: pointer;" oninput="onHoursSliderChange(this.value)">
+              <div style="display: flex; align-items: center; gap: 0.3rem;">
+                <input type="number" id="bookingHoursInput" min="0.5" max="24" step="0.5" value="${initialHours}" class="form-input" style="width: 75px; text-align: center; font-weight: 800; padding: 0.45rem 0.5rem;" oninput="onHoursInputChange(this.value)">
+                <span style="font-size: 0.85rem; font-weight: 700; color: var(--text-muted);">hrs</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dynamic Live Hourly Payment & Commission Calculation Breakdown -->
+          <div class="hourly-calc-box">
+            <div class="calc-line">
+              <span>Worker Service Rate (₹${hourlyRate}/hr × <span id="summaryHours">${initialHours}</span> hrs)</span>
+              <span id="summaryGross" style="font-weight: 700; color: #FFFFFF;">₹${initialGross}</span>
+            </div>
+            <div class="calc-line">
+              <span>SkillConnect Platform & Safety Fee (Fixed)</span>
+              <span id="summaryCustomerFee" style="color: #60A5FA; font-weight: 700;">+₹${customerFee}</span>
+            </div>
+            <div class="calc-total-row">
+              <div>
+                <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: #94A3B8;">Total Customer Payable</div>
+                <div style="font-size: 0.72rem; color: #CBD5E1;">Service charge + secure booking fee</div>
+              </div>
+              <div class="calc-total-amount" id="summaryTotalAmount">
+                ₹${initialCustomerTotal}
+              </div>
+            </div>
+            <div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px dashed rgba(255,255,255,0.15); display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #94A3B8;">
+              <span>Worker Take-Home Payout (${commissionPercent}% platform commission):</span>
+              <span id="summaryWorkerNet" style="color: #4ADE80; font-weight: 800;">₹${initialWorkerNet}</span>
+            </div>
+          </div>
+
+          <!-- Worker Working Hour Payment Option Selection -->
+          <div class="form-group">
+            <label class="form-label">Select Payment Option for Working Hours *</label>
+            <select id="paymentMethodSelect" class="form-select">
+              <option value="UPI (Instant Hourly Transfer via GPay / PhonePe / Paytm)">UPI (Instant Hourly Transfer via GPay / PhonePe / Paytm)</option>
+              <option value="Cash to Worker After Work Completion (COD)">Cash to Worker After Work Completion (COD)</option>
+              <option value="Credit / Debit Card (Online Secure Gateway)">Credit / Debit Card (Online Secure Gateway)</option>
+              <option value="Net Banking (Direct Bank Payout)">Net Banking (Direct Bank Payout)</option>
+              <option value="SkillConnect Escrow Hold (Released on Job Signoff)">SkillConnect Escrow Hold (Released on Job Signoff)</option>
+            </select>
           </div>
         ` : `
+          <!-- Duty-Based Worker Rate & Pay When Duty Is Over Notice (Electricians, Plumbers, Mechanics, etc.) -->
+          <div style="background: #F8FAFC; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 1rem; margin-bottom: 1.1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+              <div>
+                <span style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 700; display: block;">Worker Duty Rate</span>
+                <span style="font-size: 1.3rem; font-weight: 800; color: #09090B;">₹${hourlyRate} <span style="font-size: 0.85rem; font-weight: 500; color: var(--text-muted);">/ hour</span></span>
+              </div>
+              <span class="badge-pill" style="background: #FEF3C7; color: #92400E; font-size: 0.78rem; font-weight: 700; padding: 0.35rem 0.75rem;">
+                ⏱️ Pay When Duty Is Over
+              </span>
+            </div>
+
+            <div style="background: #FFFFFF; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.8rem; margin: 0.6rem 0;">
+              <div style="display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.82rem; color: #09090B; line-height: 1.45;">
+                <span style="font-size: 1.1rem; line-height: 1;">ℹ️</span>
+                <div>
+                  <strong>Hours not required upfront.</strong>
+                  <div style="color: var(--text-muted); font-size: 0.76rem; margin-top: 0.15rem;">
+                    For ${p.categoryName.toLowerCase()}s and on-site field technicians, duty hours are recorded after inspection and job completion on-site. Final payment is calculated and settled when duty is over.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; border-top: 1px dashed var(--border-color); padding-top: 0.5rem; color: var(--text-muted);">
+              <span>Platform Booking & Safety Fee:</span>
+              <span style="font-weight: 700; color: #09090B;">₹${customerFee} (Fixed)</span>
+            </div>
+          </div>
+
           <div class="form-group">
-            <label class="form-label">Payment Option</label>
+            <label class="form-label">Payment Method When Duty Is Over *</label>
             <select id="paymentMethodSelect" class="form-select">
-              <option value="UPI / PhonePe / Paytm / GPay">UPI / PhonePe / Paytm / GPay</option>
-              <option value="Credit / Debit Card">Credit / Debit Card</option>
-              <option value="Net Banking">Net Banking</option>
-              <option value="Cash on Delivery (COD)">Cash on Delivery (COD)</option>
+              <option value="Cash to Worker After Work Completion (COD)">Cash to Worker After Duty Completion (COD)</option>
+              <option value="UPI (Instant Transfer via GPay / PhonePe / Paytm on Job Finish)">UPI (GPay / PhonePe / Paytm on Job Finish)</option>
+              <option value="Credit / Debit Card (Online after completion)">Credit / Debit Card (Online after completion)</option>
+              <option value="SkillConnect Escrow Hold (Released on Job Signoff)">SkillConnect Escrow Hold (Released on Job Signoff)</option>
             </select>
           </div>
         `}
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
           <div class="form-group">
-            <label class="form-label">Preferred Date</label>
+            <label class="form-label">Preferred Date *</label>
             <input type="date" id="bookingDateInput" class="form-input" required value="2026-09-28">
           </div>
           <div class="form-group">
-            <label class="form-label">Time Slot</label>
+            <label class="form-label">Start Time Slot *</label>
             <input type="time" id="bookingTimeInput" class="form-input" required value="14:00">
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Additional Notes for Provider</label>
-          <textarea id="bookingNotesInput" class="form-textarea" placeholder="Describe job details, area location, or skill exchange preferences..."></textarea>
+          <label class="form-label">Job Notes & Specific Instructions</label>
+          <textarea id="bookingNotesInput" class="form-textarea" placeholder="Describe the job location, tools needed, or specific working hour preferences..."></textarea>
         </div>
 
         <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
           <button type="button" class="btn-secondary" style="flex: 1;" onclick="closeModal('bookingModal')">Cancel</button>
-          <button type="submit" class="btn-primary" style="flex: 1;">Confirm Request</button>
+          <button type="submit" class="btn-primary" style="flex: 1;">
+            ${defaultType === 'barter' 
+              ? 'Send Barter Proposal' 
+              : isPreBooked 
+                ? 'Confirm Request & Pay Hours' 
+                : 'Confirm Booking (Pay When Duty Over)'}
+          </button>
         </div>
       </form>
     `;
@@ -1510,6 +1968,447 @@ function switchModalBookingType(type) {
   }
 }
 
+// ── Interactive Working Hours Selection & Calculation Handlers ─────────
+window.selectBookingHours = function(hrs) {
+  const slider = document.getElementById('bookingHoursSlider');
+  const input = document.getElementById('bookingHoursInput');
+  if (slider) slider.value = hrs;
+  if (input) input.value = hrs;
+  document.querySelectorAll('.btn-hour-chip[data-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-hours')) === parseFloat(hrs));
+  });
+  updateBookingHourlyCalculation();
+};
+
+window.onHoursSliderChange = function(hrs) {
+  const input = document.getElementById('bookingHoursInput');
+  if (input) input.value = hrs;
+  document.querySelectorAll('.btn-hour-chip[data-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-hours')) === parseFloat(hrs));
+  });
+  updateBookingHourlyCalculation();
+};
+
+window.onHoursInputChange = function(hrs) {
+  const slider = document.getElementById('bookingHoursSlider');
+  const numHrs = parseFloat(hrs) || 0.5;
+  if (slider) slider.value = Math.min(12, Math.max(0.5, numHrs));
+  document.querySelectorAll('.btn-hour-chip[data-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-hours')) === numHrs);
+  });
+  updateBookingHourlyCalculation();
+};
+
+window.updateBookingHourlyCalculation = function() {
+  const p = appState.selectedProviderForBooking;
+  if (!p) return;
+  const input = document.getElementById('bookingHoursInput');
+  const hours = parseFloat(input?.value) || 1;
+  const rate = parseFloat(p.hourlyRate) || 150;
+  const gross = Math.round(hours * rate);
+  const customerFee = appState.platformCommission?.customerBookingFee ?? 20;
+  const commissionPercent = appState.platformCommission?.workerCommissionPercent ?? 8;
+  const workerCommission = Math.round(gross * (commissionPercent / 100));
+  const workerNet = gross - workerCommission;
+  const totalCustomerPayable = gross + customerFee;
+
+  const displayHours = document.getElementById('hoursDisplayLabel');
+  const summaryHours = document.getElementById('summaryHours');
+  const summaryGross = document.getElementById('summaryGross');
+  const summaryCustomerFee = document.getElementById('summaryCustomerFee');
+  const summaryTotalAmount = document.getElementById('summaryTotalAmount');
+  const summaryWorkerNet = document.getElementById('summaryWorkerNet');
+
+  if (displayHours) displayHours.innerText = `${hours} ${hours === 1 ? 'Hour' : 'Hours'}`;
+  if (summaryHours) summaryHours.innerText = hours;
+  if (summaryGross) summaryGross.innerText = `₹${gross}`;
+  if (summaryCustomerFee) summaryCustomerFee.innerText = `+₹${customerFee}`;
+  if (summaryTotalAmount) summaryTotalAmount.innerText = `₹${totalCustomerPayable}`;
+  if (summaryWorkerNet) summaryWorkerNet.innerText = `₹${workerNet}`;
+};
+
+window.selectBarterHours = function(hrs) {
+  const hiddenInput = document.getElementById('barterHoursInput');
+  if (hiddenInput) hiddenInput.value = hrs;
+  document.querySelectorAll('.btn-hour-chip[data-barter-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-barter-hours')) === parseFloat(hrs));
+  });
+};
+
+// ── Worker Rate Editor Modal & Handler ──────────────────────────────────
+window.openEditWorkerRateModal = function(providerId) {
+  const p = appState.providers.find(prov => prov.id === providerId) || appState.loggedInUser;
+  if (!p) return;
+
+  const modal = document.getElementById('bookingModal');
+  const modalBody = document.getElementById('bookingModalBody');
+  if (!modal || !modalBody) return;
+
+  modalBody.innerHTML = `
+    <div class="modal-header">
+      <h3 class="modal-title">✏️ Update Your Working Hourly Rate</h3>
+      <button class="modal-close" onclick="closeModal('bookingModal')">✕</button>
+    </div>
+    <form onsubmit="handleSaveWorkerRateSubmit(event, '${p.id}')">
+      <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.2rem;">
+        Set your customer hourly working rate. Customer bookings will dynamically calculate total payments based on this rate and requested working hours.
+      </p>
+      <div class="form-group">
+        <label class="form-label">Hourly Working Rate (₹ / hour) *</label>
+        <div style="position: relative;">
+          <span style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); font-weight: 800; font-size: 1.1rem; color: #09090B;">₹</span>
+          <input type="number" id="editHourlyRateInput" class="form-input" min="50" max="10000" step="10" value="${p.hourlyRate || 150}" required style="padding-left: 2.2rem; font-size: 1.15rem; font-weight: 800;">
+        </div>
+        <small style="color: var(--text-muted); display: block; margin-top: 0.4rem;">Standard rate for ${p.categoryName || 'professionals'}: ₹150 - ₹500/hr</small>
+      </div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+        <button type="button" class="btn-secondary" style="flex: 1;" onclick="closeModal('bookingModal')">Cancel</button>
+        <button type="submit" class="btn-primary" style="flex: 1;">Save Hourly Rate</button>
+      </div>
+    </form>
+  `;
+  modal.classList.add('active');
+};
+
+window.handleSaveWorkerRateSubmit = async function(e, providerId) {
+  e.preventDefault();
+  const input = document.getElementById('editHourlyRateInput');
+  const newRate = parseFloat(input?.value);
+  if (isNaN(newRate) || newRate <= 0) {
+    showToast('Please enter a valid hourly rate');
+    return;
+  }
+
+  const p = appState.providers.find(prov => prov.id === providerId);
+  if (p) p.hourlyRate = newRate;
+  if (appState.loggedInUser && (appState.loggedInUser.id === providerId || appState.loggedInUser.workerId === providerId)) {
+    appState.loggedInUser.hourlyRate = newRate;
+  }
+
+  if (typeof updateProviderHourlyRateInSupabase === 'function') {
+    await updateProviderHourlyRateInSupabase(providerId, newRate);
+  }
+
+  closeModal('bookingModal');
+  showToast(`✅ Hourly working rate updated to ₹${newRate}/hr!`);
+  renderMain();
+};
+
+// ── Duty Completion & Post-Work Hours Logging Modal ─────────────────────
+window.openLogWorkerHoursModal = function(bookingId) {
+  const b = appState.bookings.find(bok => bok.id === bookingId);
+  if (!b) return;
+
+  const modal = document.getElementById('bookingModal');
+  const modalBody = document.getElementById('bookingModalBody');
+  if (!modal || !modalBody) return;
+
+  const rate = parseFloat(b.hourlyRate) || 150;
+  const initialHrs = 2;
+  const customerFee = b.customerFee ?? 20;
+  const initialGross = Math.round(initialHrs * rate);
+  const commissionPercent = appState.platformCommission?.workerCommissionPercent ?? 8;
+  const initialCommission = Math.round(initialGross * (commissionPercent / 100));
+  const initialNet = initialGross - initialCommission;
+  const initialTotal = initialGross + customerFee;
+
+  modalBody.innerHTML = `
+    <div class="modal-header">
+      <div>
+        <h3 class="modal-title">⏱️ Duty Finished: Log Working Hours</h3>
+        <span style="font-size: 0.78rem; color: var(--text-muted); font-weight: 600;">Booking ID: ${b.id} • Customer: ${b.customerName || 'Customer'}</span>
+      </div>
+      <button class="modal-close" onclick="closeModal('bookingModal')">✕</button>
+    </div>
+
+    <form id="logHoursForm" data-rate="${rate}" data-fee="${customerFee}" onsubmit="handleLogWorkerHoursSubmit(event, '${b.id}')">
+      <div style="background: #F8FAFC; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.9rem; margin-bottom: 1.2rem;">
+        <div style="font-weight: 700; color: #09090B; font-size: 0.95rem;">${b.serviceTitle}</div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">Your Agreed Hourly Duty Rate: <strong>₹${rate}/hour</strong></div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Actual Duty Hours Completed on Site *</span>
+          <span id="logHoursDisplay" style="font-weight: 800; color: #09090B; font-size: 1rem;">${initialHrs} Hours</span>
+        </label>
+        <div class="hour-chips-grid">
+          <button type="button" class="btn-hour-chip" data-log-hours="1" onclick="selectLogDutyHours(1)">1 hr</button>
+          <button type="button" class="btn-hour-chip active" data-log-hours="2" onclick="selectLogDutyHours(2)">2 hrs</button>
+          <button type="button" class="btn-hour-chip" data-log-hours="3" onclick="selectLogDutyHours(3)">3 hrs</button>
+          <button type="button" class="btn-hour-chip" data-log-hours="4" onclick="selectLogDutyHours(4)">4 hrs (Half Day)</button>
+          <button type="button" class="btn-hour-chip" data-log-hours="6" onclick="selectLogDutyHours(6)">6 hrs</button>
+          <button type="button" class="btn-hour-chip" data-log-hours="8" onclick="selectLogDutyHours(8)">8 hrs (Full Day)</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem;">
+          <input type="range" id="logHoursSlider" min="0.5" max="12" step="0.5" value="${initialHrs}" class="form-range" style="flex: 1; accent-color: #09090B; cursor: pointer;" oninput="onLogHoursSliderChange(this.value)">
+          <div style="display: flex; align-items: center; gap: 0.3rem;">
+            <input type="number" id="logHoursInput" min="0.5" max="24" step="0.5" value="${initialHrs}" class="form-input" style="width: 80px; text-align: center; font-weight: 800; padding: 0.45rem 0.5rem;" oninput="onLogHoursInputChange(this.value)">
+            <span style="font-size: 0.85rem; font-weight: 700; color: var(--text-muted);">hrs</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Settle Bill Breakdown -->
+      <div class="hourly-calc-box">
+        <div class="calc-line">
+          <span>Duty Payment (<span id="logSummaryHours">${initialHrs}</span> hrs × ₹${rate}/hr)</span>
+          <span id="logSummaryGross" style="font-weight: 700; color: #FFFFFF;">₹${initialGross}</span>
+        </div>
+        <div class="calc-line">
+          <span>Platform Safety Fee</span>
+          <span style="color: #60A5FA; font-weight: 700;">+₹${customerFee}</span>
+        </div>
+        <div class="calc-total-row">
+          <div>
+            <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: #94A3B8;">Total Customer Bill</div>
+            <div style="font-size: 0.72rem; color: #CBD5E1;">Calculated based on completed duty hours</div>
+          </div>
+          <div class="calc-total-amount" id="logSummaryTotalAmount">
+            ₹${initialTotal}
+          </div>
+        </div>
+        <div style="margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px dashed rgba(255,255,255,0.15); display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: #94A3B8;">
+          <span>Your Net Take-Home Payout (after 8% platform fee):</span>
+          <span id="logSummaryWorkerNet" style="color: #4ADE80; font-weight: 800; font-size: 0.95rem;">₹${initialNet}</span>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+        <button type="button" class="btn-secondary" style="flex: 1;" onclick="closeModal('bookingModal')">Cancel</button>
+        <button type="submit" class="btn-primary" style="flex: 1; background: #16A34A; border-color: #16A34A;">✓ Finalize Duty & Settle Bill</button>
+      </div>
+    </form>
+  `;
+  modal.classList.add('active');
+};
+
+window.selectLogDutyHours = function(hrs) {
+  const slider = document.getElementById('logHoursSlider');
+  const input = document.getElementById('logHoursInput');
+  if (slider) slider.value = hrs;
+  if (input) input.value = hrs;
+  document.querySelectorAll('.btn-hour-chip[data-log-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-log-hours')) === parseFloat(hrs));
+  });
+  updateLogDutyCalculation();
+};
+
+window.onLogHoursSliderChange = function(hrs) {
+  const input = document.getElementById('logHoursInput');
+  if (input) input.value = hrs;
+  document.querySelectorAll('.btn-hour-chip[data-log-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-log-hours')) === parseFloat(hrs));
+  });
+  updateLogDutyCalculation();
+};
+
+window.onLogHoursInputChange = function(hrs) {
+  const slider = document.getElementById('logHoursSlider');
+  const numHrs = parseFloat(hrs) || 0.5;
+  if (slider) slider.value = Math.min(12, Math.max(0.5, numHrs));
+  document.querySelectorAll('.btn-hour-chip[data-log-hours]').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.getAttribute('data-log-hours')) === numHrs);
+  });
+  updateLogDutyCalculation();
+};
+
+window.updateLogDutyCalculation = function() {
+  const form = document.getElementById('logHoursForm');
+  if (!form) return;
+  const rate = parseFloat(form.getAttribute('data-rate')) || 150;
+  const customerFee = parseFloat(form.getAttribute('data-fee')) || 20;
+  const hours = parseFloat(document.getElementById('logHoursInput')?.value) || 1;
+  const gross = Math.round(hours * rate);
+  const commissionPercent = 8;
+  const commission = Math.round(gross * (commissionPercent / 100));
+  const net = gross - commission;
+  const total = gross + customerFee;
+
+  const displayHours = document.getElementById('logHoursDisplay');
+  const summaryHours = document.getElementById('logSummaryHours');
+  const summaryGross = document.getElementById('logSummaryGross');
+  const summaryTotal = document.getElementById('logSummaryTotalAmount');
+  const summaryWorkerNet = document.getElementById('logSummaryWorkerNet');
+
+  if (displayHours) displayHours.innerText = `${hours} ${hours === 1 ? 'Hour' : 'Hours'}`;
+  if (summaryHours) summaryHours.innerText = hours;
+  if (summaryGross) summaryGross.innerText = `₹${gross}`;
+  if (summaryTotal) summaryTotal.innerText = `₹${total}`;
+  if (summaryWorkerNet) summaryWorkerNet.innerText = `₹${net}`;
+};
+
+window.handleLogWorkerHoursSubmit = async function(e, bookingId) {
+  e.preventDefault();
+  const b = appState.bookings.find(bok => bok.id === bookingId);
+  if (!b) return;
+
+  const hoursInput = document.getElementById('logHoursInput');
+  const loggedHours = parseFloat(hoursInput?.value) || 1;
+  const rate = parseFloat(b.hourlyRate) || 150;
+  const gross = Math.round(loggedHours * rate);
+  const commissionPercent = appState.platformCommission?.workerCommissionPercent ?? 8;
+  const commission = Math.round(gross * (commissionPercent / 100));
+  const netPayout = gross - commission;
+  const customerFee = b.customerFee ?? 20;
+  const totalAmount = gross + customerFee;
+
+  b.hours = loggedHours;
+  b.hoursLogged = true;
+  b.grossAmount = gross;
+  b.workerCommission = commission;
+  b.workerNetPayout = netPayout;
+  b.amount = totalAmount;
+  b.platformRevenue = customerFee + commission;
+  b.status = 'Completed';
+
+  const customerNotification = {
+    id: `notif-${Date.now()}`,
+    targetUserId: b.customerId || 'USR-001',
+    title: `✓ Duty Completed by ${b.providerName}`,
+    desc: `${b.providerName} completed duty for "${b.serviceTitle}". Logged ${loggedHours} working hrs. Total bill: ₹${totalAmount}.`,
+    time: 'Just now',
+    read: false,
+    bookingId: b.id
+  };
+  appState.notifications.unshift(customerNotification);
+
+  if (typeof updateBookingInSupabase === 'function') {
+    await updateBookingInSupabase(b);
+  }
+  if (typeof saveNotificationToSupabase === 'function') {
+    await saveNotificationToSupabase(customerNotification);
+  }
+
+  closeModal('bookingModal');
+  showToast(`🎉 Duty completed! Logged ${loggedHours} hrs. Final bill of ₹${totalAmount} generated.`);
+  renderMain();
+};
+
+// ── Official Service & Hourly Payment Receipt Modal ────────────────────
+window.showBookingReceipt = function(bookingId) {
+  const b = appState.bookings.find(bok => bok.id === bookingId);
+  if (!b) return;
+
+  const modal = document.getElementById('bookingModal');
+  const modalBody = document.getElementById('bookingModalBody');
+  if (!modal || !modalBody) return;
+
+  const isBarter = b.type === 'barter';
+  const hasHours = isBarter || b.status === 'Completed' || b.hoursLogged;
+  const hours = b.hours || (isBarter ? 2 : 0);
+  const rate = b.hourlyRate || 150;
+  const gross = b.grossAmount ?? (isBarter ? 0 : Math.round(hours * rate));
+  const customerFee = b.customerFee ?? (isBarter ? 0 : (appState.platformCommission?.customerBookingFee ?? 20));
+  const workerCommission = b.workerCommission ?? (isBarter ? 0 : Math.round(gross * ((appState.platformCommission?.workerCommissionPercent ?? 8) / 100)));
+  const workerNet = b.workerNetPayout ?? (isBarter ? 0 : gross - workerCommission);
+  const totalAmount = isBarter ? 0 : (b.amount ?? (gross + customerFee));
+
+  modalBody.innerHTML = `
+    <div class="invoice-card">
+      <div class="invoice-header-row">
+        <div>
+          <div style="font-size: 1.35rem; font-weight: 800; color: #09090B;">🤝 SkillConnect India</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Service Invoice & Working Hour Payment Bill</div>
+        </div>
+        <div style="text-align: right;">
+          <button class="modal-close" onclick="closeModal('bookingModal')" style="font-size: 1.3rem; margin-bottom: 0.3rem;">✕</button>
+          <div style="font-size: 0.85rem; font-weight: 800; color: #09090B;">ID: ${b.id}</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">${b.date} at ${b.time}</div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.2rem; background: #F8FAFC; padding: 1rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+        <div>
+          <span style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; display: block;">Service Professional</span>
+          <strong style="color: #09090B; font-size: 0.95rem;">${b.providerName}</strong>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">${b.categoryName || 'Worker Pro'} (${b.providerId})</div>
+        </div>
+        <div>
+          <span style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; display: block;">Customer</span>
+          <strong style="color: #09090B; font-size: 0.95rem;">${b.customerName || 'Rahul Verma'}</strong>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Verified Local Client</div>
+        </div>
+      </div>
+
+      <table class="invoice-table">
+        <thead>
+          <tr>
+            <th>Service Description</th>
+            <th style="text-align: center;">Working Hours</th>
+            <th style="text-align: right;">Hourly Rate</th>
+            <th style="text-align: right;">Subtotal</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <strong>${b.serviceTitle}</strong>
+              <div style="font-size: 0.75rem; color: var(--text-muted);">${b.userNotes || 'Standard service session'}</div>
+            </td>
+            <td style="text-align: center; font-weight: 700;">
+              ${isBarter ? `${hours} hrs (Barter)` : hasHours ? `${hours} ${hours === 1 ? 'hr' : 'hrs'}` : 'Pending duty completion'}
+            </td>
+            <td style="text-align: right;">${isBarter ? 'Skill Barter' : `₹${rate} / hr`}</td>
+            <td style="text-align: right; font-weight: 800; color: #09090B;">
+              ${isBarter ? '₹0 (Barter)' : hasHours ? `₹${gross}` : `₹${rate}/hr (on completion)`}
+            </td>
+          </tr>
+          ${!isBarter ? `
+            <tr>
+              <td colspan="3" style="color: var(--text-muted); font-size: 0.8rem;">SkillConnect Platform & Safety Booking Fee</td>
+              <td style="text-align: right; color: #2563EB; font-weight: 700;">+₹${customerFee}</td>
+            </tr>
+            ${hasHours ? `
+              <tr style="background: #F8FAFC;">
+                <td colspan="3" style="color: var(--text-muted); font-size: 0.8rem;">Platform Commission Deducted from Worker (${appState.platformCommission?.workerCommissionPercent ?? 8}%)</td>
+                <td style="text-align: right; color: #DC2626; font-weight: 700;">-₹${workerCommission}</td>
+              </tr>
+            ` : ''}
+          ` : `
+            <tr>
+              <td colspan="3" style="color: var(--text-muted); font-size: 0.8rem;">SkillConnect Barter Fee</td>
+              <td style="text-align: right; color: #16A34A; font-weight: 700;">₹0 (Free Community Exchange)</td>
+            </tr>
+          `}
+        </tbody>
+        <tfoot>
+          <tr style="border-top: 2px solid #09090B;">
+            <th colspan="3" style="font-size: 0.95rem; font-weight: 800; color: #09090B; padding-top: 0.8rem;">Total Billed to Customer</th>
+            <th style="font-size: 1.3rem; font-weight: 800; color: #09090B; text-align: right; padding-top: 0.8rem;">
+              ${isBarter ? '🤝 Skill Exchange' : hasHours ? `₹${totalAmount}` : `₹${customerFee} (Fixed Fee) + Duty Total on Completion`}
+            </th>
+          </tr>
+          ${!isBarter && hasHours ? `
+            <tr>
+              <th colspan="3" style="font-size: 0.85rem; font-weight: 700; color: #16A34A; padding-top: 0.4rem;">Worker Net Payout (Take-Home)</th>
+              <th style="font-size: 1.05rem; font-weight: 800; color: #16A34A; text-align: right; padding-top: 0.4rem;">₹${workerNet}</th>
+            </tr>
+          ` : ''}
+        </tfoot>
+      </table>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.8rem; background: #F1F5F9; padding: 0.85rem 1rem; border-radius: var(--radius-sm); margin-top: 1rem;">
+        <div>
+          <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Payment Option</span>
+          <div style="font-weight: 700; color: #09090B; font-size: 0.85rem;">💳 ${b.paymentMethod || 'Direct Payment'}</div>
+        </div>
+        <div>
+          <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Booking Status</span>
+          <div style="font-weight: 700; color: #09090B; font-size: 0.85rem;">● ${b.status}</div>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+        <button class="btn-secondary" style="flex: 1;" onclick="closeModal('bookingModal')">Close</button>
+        <button class="btn-primary" style="flex: 1;" onclick="window.print()">🖨️ Print / Save Bill</button>
+      </div>
+    </div>
+  `;
+  modal.classList.add('active');
+};
+
 async function handleBookingSubmit(e) {
   e.preventDefault();
   const p = appState.selectedProviderForBooking;
@@ -1521,8 +2420,47 @@ async function handleBookingSubmit(e) {
   const notes = document.getElementById('bookingNotesInput')?.value || '';
 
   const isBarter = appState.bookingType === 'barter';
+  const isPreBooked = isPreBookedHoursCategory(p.category);
   const offeredSkill = isBarter ? (document.getElementById('offeredSkillInput')?.value || 'Skill Barter Offer') : 'N/A';
-  const payMethod = isBarter ? 'Skill Exchange (Barter)' : (document.getElementById('paymentMethodSelect')?.value || 'UPI');
+  
+  const hourlyRate = parseFloat(p.hourlyRate) || 150;
+  const customerFee = isBarter ? 0 : (appState.platformCommission?.customerBookingFee ?? 20);
+  const commissionPercent = isBarter ? 0 : (appState.platformCommission?.workerCommissionPercent ?? 8);
+
+  let hours = 0;
+  let hoursLogged = false;
+  let grossAmount = 0;
+  let workerCommission = 0;
+  let workerNetPayout = 0;
+  let totalCustomerAmount = 0;
+  let platformRevenue = 0;
+
+  if (isBarter) {
+    hours = parseFloat(document.getElementById('barterHoursInput')?.value) || 2;
+    hoursLogged = true;
+  } else if (isPreBooked) {
+    hours = parseFloat(document.getElementById('bookingHoursInput')?.value) || 2;
+    hoursLogged = true;
+    grossAmount = Math.round(hours * hourlyRate);
+    workerCommission = Math.round(grossAmount * (commissionPercent / 100));
+    workerNetPayout = grossAmount - workerCommission;
+    totalCustomerAmount = grossAmount + customerFee;
+    platformRevenue = customerFee + workerCommission;
+  } else {
+    // Duty-based worker (Electrician, Plumber, etc.)
+    // Payment when duty is over!
+    hours = 0;
+    hoursLogged = false;
+    grossAmount = 0;
+    workerCommission = 0;
+    workerNetPayout = 0;
+    totalCustomerAmount = customerFee;
+    platformRevenue = customerFee;
+  }
+
+  const payMethod = isBarter 
+    ? 'Skill Exchange (Barter)' 
+    : (document.getElementById('paymentMethodSelect')?.value || 'Cash to Worker After Work Completion (COD)');
 
   const customerName = appState.loggedInUser?.name || 'Rahul Verma';
   const customerId = appState.loggedInUser?.id || 'USR-001';
@@ -1538,8 +2476,16 @@ async function handleBookingSubmit(e) {
     serviceTitle: title,
     type: isBarter ? 'barter' : 'monetary',
     offeredSkill: offeredSkill,
+    hours: hours,
+    hoursLogged: hoursLogged,
+    hourlyRate: hourlyRate,
+    grossAmount: grossAmount,
+    customerFee: customerFee,
+    workerCommission: workerCommission,
+    workerNetPayout: workerNetPayout,
+    amount: totalCustomerAmount,
+    platformRevenue: platformRevenue,
     paymentMethod: payMethod,
-    amount: isBarter ? 0 : 100,
     status: 'Pending',
     date: date,
     time: time,
@@ -1554,7 +2500,11 @@ async function handleBookingSubmit(e) {
     id: `notif-${Date.now() + 1}`,
     targetUserId: p.id,
     title: `📥 New Request from ${customerName}`,
-    desc: `Customer requested "${title}" (${isBarter ? 'Barter Offer: ' + offeredSkill : 'Direct Booking'}) for ${date} at ${time}.`,
+    desc: isBarter
+      ? `Customer requested "${title}" (${hours} hr barter session: "${offeredSkill}") for ${date} at ${time}.`
+      : isPreBooked
+        ? `Customer booked ${hours} working hrs for "${title}" (@ ₹${hourlyRate}/hr = ₹${grossAmount} gross, ₹${workerCommission} platform fee, net take-home: ₹${workerNetPayout}) on ${date} at ${time}.`
+        : `Customer requested "${title}" for ${date} at ${time}. (Payment settled when duty is over @ ₹${hourlyRate}/hr).`,
     time: 'Just now',
     read: false,
     bookingId: newBooking.id
@@ -1570,7 +2520,12 @@ async function handleBookingSubmit(e) {
   }
 
   closeModal('bookingModal');
-  showToast(`✓ Request sent exclusively to ${p.name} (${p.workerId || p.id})!`);
+  showToast(isBarter
+    ? `✓ Barter request sent to ${p.name}! (${hours} hrs exchange)`
+    : isPreBooked
+      ? `✓ Request sent to ${p.name}! (${hours} hrs @ ₹${hourlyRate}/hr = ₹${totalCustomerAmount} total paid, net payout ₹${workerNetPayout})`
+      : `✓ Request sent to ${p.name}! Payment will be settled @ ₹${hourlyRate}/hr when duty is over.`
+  );
 
   if (appState.currentRole === 'worker') {
     switchTab('worker');

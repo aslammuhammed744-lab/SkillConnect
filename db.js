@@ -88,22 +88,39 @@ function mapProviderFromDB(row) {
 }
 
 function mapBookingFromDB(row) {
+  const isMonetary = row.type === 'monetary';
+  const hours = parseFloat(row.hours) || 1;
+  const hourlyRate = parseFloat(row.hourly_rate) || 100;
+  const gross = parseFloat(row.gross_amount) || (isMonetary ? Math.round(hours * hourlyRate) : 0);
+  const customerFee = parseFloat(row.customer_fee) || (isMonetary ? 20 : 0);
+  const commission = parseFloat(row.worker_commission) || (isMonetary ? Math.round(gross * 0.08) : 0);
+  const netPayout = parseFloat(row.worker_net_payout) || (gross - commission);
+  const totalAmount = parseFloat(row.amount) || (gross + customerFee);
+  const platformRev = parseFloat(row.platform_revenue) || (customerFee + commission);
+
   return {
-    id:            row.id,
-    providerId:    row.provider_id,
-    providerName:  row.provider_name,
-    categoryName:  row.category_name,
-    serviceTitle:  row.service_title,
-    type:          row.type,
-    offeredSkill:  row.offered_skill,
-    paymentMethod: row.payment_method,
-    amount:        parseFloat(row.amount) || 0,
-    status:        row.status,
-    date:          row.date,
-    time:          row.time,
-    userNotes:     row.user_notes,
-    customerId:    row.customer_id,
-    customerName:  row.customer_name,
+    id:               row.id,
+    providerId:       row.provider_id,
+    providerName:     row.provider_name,
+    categoryName:     row.category_name,
+    serviceTitle:     row.service_title,
+    type:             row.type,
+    offeredSkill:     row.offered_skill,
+    hours:            hours,
+    hourlyRate:       hourlyRate,
+    grossAmount:      gross,
+    customerFee:      customerFee,
+    workerCommission: commission,
+    workerNetPayout:  netPayout,
+    amount:           totalAmount,
+    platformRevenue:  platformRev,
+    paymentMethod:    row.payment_method,
+    status:           row.status,
+    date:             row.date,
+    time:             row.time,
+    userNotes:        row.user_notes,
+    customerId:       row.customer_id,
+    customerName:     row.customer_name,
   };
 }
 
@@ -139,7 +156,7 @@ function buildChatThreads(messages, providers) {
 async function saveBookingToSupabase(booking) {
   if (!supabaseClient) return;
   try {
-    const { error } = await supabaseClient.from('bookings').insert([{
+    const bookingPayload = {
       id:             booking.id,
       provider_id:    booking.providerId,
       provider_name:  booking.providerName,
@@ -155,11 +172,45 @@ async function saveBookingToSupabase(booking) {
       date:           booking.date,
       time:           booking.time,
       user_notes:     booking.userNotes,
-    }]);
-    if (error) throw error;
+    };
+
+    // Try including hours, hourly_rate, and commission fields
+    const fullPayload = {
+      ...bookingPayload,
+      hours:             booking.hours || 1,
+      hourly_rate:       booking.hourlyRate || 100,
+      gross_amount:      booking.grossAmount || 0,
+      customer_fee:      booking.customerFee || 0,
+      worker_commission: booking.workerCommission || 0,
+      worker_net_payout: booking.workerNetPayout || 0,
+      platform_revenue:  booking.platformRevenue || 0
+    };
+
+    const { error } = await supabaseClient.from('bookings').insert([fullPayload]);
+    if (error) {
+      // Fallback without new columns in case table hasn't added them yet
+      console.warn('Retrying insert with basic bookingPayload:', error.message);
+      const { error: fallbackErr } = await supabaseClient.from('bookings').insert([bookingPayload]);
+      if (fallbackErr) throw fallbackErr;
+    }
     console.log('✅ Booking saved to Supabase:', booking.id);
   } catch (err) {
     console.error('❌ Failed to save booking:', err.message);
+  }
+}
+
+// Update provider hourly rate in Supabase
+async function updateProviderHourlyRateInSupabase(providerId, newRate) {
+  if (!supabaseClient) return;
+  try {
+    const { error } = await supabaseClient
+      .from('providers')
+      .update({ hourly_rate: newRate })
+      .eq('id', providerId);
+    if (error) throw error;
+    console.log('✅ Provider hourly rate updated in Supabase:', providerId, '→ ₹' + newRate);
+  } catch (err) {
+    console.error('❌ Failed to update hourly rate in Supabase:', err.message);
   }
 }
 
@@ -178,10 +229,25 @@ async function updateBookingStatusInSupabase(bookingId, newStatus) {
   }
 }
 
-// Called when a new worker registers
 async function saveProviderToSupabase(provider) {
   if (!supabaseClient) return;
   try {
+    // Ensure category exists in categories table to satisfy foreign key constraint
+    if (provider.category) {
+      const catObj = (typeof initialCategories !== 'undefined' ? initialCategories : []).find(c => c.id === provider.category);
+      if (catObj && catObj.id !== 'all') {
+        try {
+          await supabaseClient.from('categories').upsert([{
+            id: catObj.id,
+            name: catObj.name,
+            icon: catObj.icon || '🛠️'
+          }], { onConflict: 'id' });
+        } catch (catErr) {
+          console.warn('Category upsert warning (non-fatal):', catErr);
+        }
+      }
+    }
+
     const { error } = await supabaseClient.from('providers').insert([{
       id:              provider.id,
       worker_id:       provider.workerId,
